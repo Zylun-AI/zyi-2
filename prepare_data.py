@@ -2,12 +2,13 @@
 Prepara o CC3M para o ZYI 2: baixa, filtra e pré-computa latentes do VAE + embeddings do CLIP.
 
 Etapas (cada uma é retomável: rodar de novo continua de onde parou):
-  download   baixa o TSV oficial do CC3M e as imagens com img2dataset (.tar webdataset, lado menor <= 512px)
+  download   --source urls: baixa legendas+URLs do CC3M (Hugging Face) e as imagens com img2dataset
+             --source wds:  baixa os .tar com as imagens já prontas (pixparse/cc3m-wds, sem links mortos)
   encode     filtra, recorta/redimensiona, roda VAE + CLIP e grava shards .npy (uma vez por resolução)
   synthetic  gera shards sintéticos (sem internet) para smoke tests
 
 Exemplos:
-  python prepare_data.py download --out data/cc3m_wds
+  python prepare_data.py download --out data/cc3m_wds                    # ou: --source wds
   python prepare_data.py encode --wds data/cc3m_wds --out data/cc3m_256 --resolution 256
   python prepare_data.py encode --wds data/cc3m_wds --out data/cc3m_512 --resolution 512
   python prepare_data.py download --split val --out data/cc3m_val_wds          # para o FID
@@ -17,7 +18,6 @@ import argparse
 import json
 import os
 import time
-import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
@@ -28,23 +28,66 @@ from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from zyi.data import (CLIP_NAME, VAE_NAME, VAE_SCALE, TextEncoder, center_crop_resize, iter_tar, load_image,
                       load_vae, vae_encode)
 
-CC3M_TSV = {
-    "train": "https://storage.googleapis.com/gcc-data/Train/GCC-training.tsv",
-    "val": "https://storage.googleapis.com/gcc-data/Validation/GCC-1.1.0-Validation.tsv",
-}
+HF_URLS_REPO = "google-research-datasets/conceptual_captions"   # legendas + URLs (parquet)
+HF_WDS_REPO = "pixparse/cc3m-wds"                                # imagens já baixadas (webdataset)
 EVAL_PROMPTS = Path(__file__).parent / "eval" / "prompts.txt"
 
 
 # ----------------------------------------------------------------------------- download
 
+def hf_files(repo, split, suffix):
+    """Lista os arquivos de um dataset do Hub com a extensão e o split pedidos (tenta o branch de parquet convertido)."""
+    from huggingface_hub import list_repo_files
+    name = {"train": "train", "val": "validation"}[split]
+    for revision in (None, "refs/convert/parquet"):
+        try:
+            files = list_repo_files(repo, repo_type="dataset", revision=revision)
+        except Exception:
+            continue
+        files = sorted(f for f in files if f.endswith(suffix) and name in os.path.basename(f))
+        if suffix == ".parquet" and any("unlabeled" in f for f in files):  # config com url + legenda
+            files = [f for f in files if "unlabeled" in f]
+        if files:
+            return files, revision
+    raise SystemExit(f"nenhum arquivo {suffix} do split '{split}' em {repo}")
+
+
+def url_list_from_hub(out, split):
+    """Legendas + URLs do CC3M a partir do espelho no Hugging Face (o TSV do Google não é mais público)."""
+    import pyarrow.parquet as pq
+    from huggingface_hub import hf_hub_download
+    files, revision = hf_files(HF_URLS_REPO, split, ".parquet")
+    tsv, part = out / f"cc3m_{split}.tsv", out / f"cc3m_{split}.tsv.part"
+    with open(part, "w", encoding="utf-8") as dst:
+        for f in files:
+            path = hf_hub_download(HF_URLS_REPO, f, repo_type="dataset", revision=revision)
+            table = pq.read_table(path, columns=["caption", "image_url"]).to_pydict()
+            for caption, url in zip(table["caption"], table["image_url"]):
+                dst.write(" ".join(str(caption).split()) + "\t" + url + "\n")
+    os.replace(part, tsv)
+    return tsv
+
+
 def cmd_download(args):
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+
+    if args.source == "wds":  # imagens já baixadas (sem links mortos): só copia os .tar do Hub
+        from huggingface_hub import hf_hub_download
+        files, revision = hf_files(HF_WDS_REPO, args.split, ".tar")
+        for f in files[: args.max_shards]:
+            if not (out / os.path.basename(f)).exists():
+                print(f"baixando {f}")
+                hf_hub_download(HF_WDS_REPO, f, repo_type="dataset", revision=revision, local_dir=out)
+                if os.path.dirname(f):   # achata subpastas: o encode lê <out>/*.tar
+                    os.replace(out / f, out / os.path.basename(f))
+        return
+
     tsv = Path(args.tsv) if args.tsv else out / f"cc3m_{args.split}.tsv"
     if not tsv.exists():
-        print(f"baixando {CC3M_TSV[args.split]} -> {tsv}")
-        urllib.request.urlretrieve(CC3M_TSV[args.split], tsv)
-    # o TSV oficial não tem cabeçalho (colunas: legenda, url); o img2dataset precisa de um
+        print(f"baixando a lista de URLs de {HF_URLS_REPO} -> {tsv}")
+        tsv = url_list_from_hub(out, args.split)
+    # o TSV do CC3M não tem cabeçalho (colunas: legenda, url); o img2dataset precisa de um
     url_list = out / f"cc3m_{args.split}_urls.tsv"
     with open(tsv, encoding="utf-8") as src, open(url_list, "w", encoding="utf-8") as dst:
         dst.write("caption\turl\n")
@@ -118,6 +161,9 @@ def write_fixed(out, text_encoder, args, extra=None):
 
 
 def cmd_encode(args):
+    tars = sorted(Path(args.wds).glob("*.tar"))
+    if not tars:
+        raise SystemExit(f"nenhum .tar em {args.wds}: rode 'prepare_data.py download' primeiro (e confira se terminou sem erro)")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     args.min_size = args.min_size or args.resolution
@@ -126,7 +172,6 @@ def cmd_encode(args):
     text_encoder = TextEncoder(device, args.text_len, random_init=args.random_encoders)
     write_fixed(out, text_encoder, args)
 
-    tars = sorted(Path(args.wds).glob("*.tar"))
     done = {p.name[: -len(".latents.npy")] for p in out.glob("*.latents.npy")}
     count = sum(np.load(out / f"{s}.latents.npy", mmap_mode="r").shape[0] for s in done)
     todo = [t for t in tars if t.stem not in done]
@@ -214,7 +259,10 @@ def main():
     d = sub.add_parser("download", help="baixa o CC3M com img2dataset")
     d.add_argument("--out", default="data/cc3m_wds")
     d.add_argument("--split", default="train", choices=["train", "val"])
-    d.add_argument("--tsv", default=None, help="TSV do CC3M já baixado (senão baixa o oficial)")
+    d.add_argument("--source", default="urls", choices=["urls", "wds"],
+                   help="urls: img2dataset a partir das URLs; wds: .tar prontos do Hub (pixparse/cc3m-wds)")
+    d.add_argument("--max_shards", type=int, default=None, help="--source wds: baixa só os N primeiros .tar")
+    d.add_argument("--tsv", default=None, help="TSV do CC3M já baixado (legenda<TAB>url)")
     d.add_argument("--max_urls", type=int, default=None, help="usa só as primeiras N URLs")
     d.add_argument("--image_size", type=int, default=512, help="lado menor máximo guardado")
     d.add_argument("--min_image_size", type=int, default=256)
@@ -234,7 +282,7 @@ def main():
     e.add_argument("--max_samples", type=int, default=None, help="padrão: todas")
     e.add_argument("--max_hours", type=float, default=None, help="para ao atingir este tempo (padrão: sem limite)")
     e.add_argument("--batch_size", type=int, default=128)
-    e.add_argument("--workers", type=int, default=16)
+    e.add_argument("--workers", type=int, default=min(16, os.cpu_count() or 1))
     e.add_argument("--random_encoders", action="store_true", help="VAE/CLIP com pesos aleatórios (só smoke test offline)")
 
     s = sub.add_parser("synthetic", help="dados sintéticos para smoke tests")

@@ -18,7 +18,9 @@ git clone https://github.com/Zylun-AI/zyi-2.git && cd zyi-2
 pip install -r requirements.txt
 
 # 1) dados (fora do orçamento de 12h): baixa o CC3M, filtra e pré-computa latentes + embeddings
-python prepare_data.py download --out data/cc3m_wds
+python prepare_data.py download --out data/cc3m_wds        # URLs do Hugging Face + img2dataset
+# ou, sem links mortos: .tar com as imagens já baixadas (pixparse/cc3m-wds; --max_shards N limita)
+# python prepare_data.py download --source wds --out data/cc3m_wds
 python prepare_data.py encode --wds data/cc3m_wds --out data/cc3m_256 --resolution 256
 python prepare_data.py encode --wds data/cc3m_wds --out data/cc3m_512 --resolution 512
 
@@ -106,8 +108,12 @@ ele usa uma aproximação linear do latente e não baixa nada.
 
 `prepare_data.py` tem três etapas, todas retomáveis:
 
-- `download`: baixa o TSV oficial do CC3M e as imagens com [img2dataset](https://github.com/rom1504/img2dataset)
-  (webdataset `.tar`, lado menor ≤ 512px). `--max_urls N` limita o download.
+- `download`: por padrão (`--source urls`) pega legendas + URLs do espelho do CC3M no Hugging Face
+  ([google-research-datasets/conceptual_captions](https://huggingface.co/datasets/google-research-datasets/conceptual_captions);
+  o TSV no Google Storage não é mais público) e baixa as imagens com [img2dataset](https://github.com/rom1504/img2dataset)
+  (webdataset `.tar`, lado menor ≤ 512px). `--max_urls N` limita o download. Com `--source wds` baixa os `.tar` já
+  prontos de [pixparse/cc3m-wds](https://huggingface.co/datasets/pixparse/cc3m-wds): mais rápido e sem links mortos,
+  mas com imagens no tamanho original (mais disco); `--max_shards N` limita.
 - `encode`: filtra (legenda com 3–40 palavras, lado menor ≥ resolução, proporção ≤ 2:1), faz o recorte central e
   grava por `.tar` de entrada um shard com `latents` (float16), `text` (32×768), `pooled` (768) e legendas. Também
   grava `meta.json`, o embedding do prompt vazio e os dos prompts de eval. `--max_samples N` e `--max_hours H`
