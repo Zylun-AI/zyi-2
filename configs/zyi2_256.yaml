@@ -1,0 +1,38 @@
+# ZYI 2, fase 1: 256px (latente 32x32 -> 256 tokens), ~8h numa A100 80GB.
+run_name: zyi2_256
+out_dir: checkpoints/zyi2_256
+data_dir: data/cc3m_256
+max_samples: null              # null = todas as amostras pré-computadas
+
+model:                         # ~366M parâmetros
+  patch_size: 2
+  dim: 1024
+  depth: 16
+  heads: 16                    # head_dim 64 (Flash Attention)
+  mlp_ratio: 4.0
+  rope_base_grid: 16           # grid de tokens desta fase; a fase 2 interpola as posições para ele
+  grad_checkpointing: false
+
+batch_size: 256
+micro_batch_size: 128          # 2 micro-batches por passo (~45 GiB de ativações); com memória sobrando, suba para 256
+lr: 2.0e-4
+min_lr: 2.0e-5
+warmup_steps: 1000
+weight_decay: 0.0
+betas: [0.9, 0.95]
+grad_clip: 1.0
+ema_decay: 0.9999
+
+cfg_dropout: 0.1               # 10% de prompt vazio (CFG)
+t_mean: 0.0                    # logit-normal
+t_std: 1.0
+time_shift: 1.0
+
+time_budget_hours: 8.0
+checkpoint_every_minutes: 30
+sample_every_minutes: 60
+log_every: 50
+logger: tensorboard            # ou wandb / none
+dtype: bfloat16
+compile: true
+num_workers: 8

@@ -1,0 +1,35 @@
+# ZYI 2, fase 2: 512px (latente 64x64 -> 1024 tokens), ~4h numa A100 80GB.
+# A arquitetura vem do checkpoint da fase 1; as posições do RoPE são interpoladas (grid 32 -> 16).
+run_name: zyi2_512
+out_dir: checkpoints/zyi2_512
+data_dir: data/cc3m_512
+max_samples: null
+init_from: checkpoints/zyi2_256/ckpt.pt
+init_weights: ema              # começa dos pesos EMA da fase 1
+
+model:
+  grad_checkpointing: false    # true economiza memória (~30% mais lento)
+
+batch_size: 128
+micro_batch_size: 32           # 4 micro-batches por passo (~45 GiB de ativações a 1024 tokens)
+lr: 1.0e-4
+min_lr: 1.0e-5
+warmup_steps: 500
+weight_decay: 0.0
+betas: [0.9, 0.95]
+grad_clip: 1.0
+ema_decay: 0.999               # fase curta: EMA com horizonte menor
+
+cfg_dropout: 0.1
+t_mean: 0.0
+t_std: 1.0
+time_shift: 2.0                # SD3: sqrt(512² / 256²); mais ruído em resolução maior
+
+time_budget_hours: 4.0
+checkpoint_every_minutes: 30
+sample_every_minutes: 60
+log_every: 50
+logger: tensorboard
+dtype: bfloat16
+compile: true
+num_workers: 8

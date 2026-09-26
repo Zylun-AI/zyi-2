@@ -1,0 +1,14 @@
+# ZYI 2: PyTorch 2.x puro para o modelo; diffusers/transformers só para carregar o VAE e o CLIP congelados
+torch>=2.4
+numpy
+pyyaml
+pillow
+diffusers>=0.27        # AutoencoderKL (VAE do SD)
+transformers>=4.40     # CLIP ViT-L/14
+safetensors
+huggingface_hub
+tensorboard
+img2dataset            # download do CC3M (prepare_data.py download)
+gradio>=4.44           # app.py
+torchmetrics[image]    # FID (eval/evaluate.py)
+# opcional: wandb (logger: wandb)

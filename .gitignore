@@ -1,0 +1,34 @@
+# pesos, dados, latentes e logs: nunca vão para o git
+checkpoints/
+data/
+samples/
+outputs/
+runs/
+wandb/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.npy
+*.npz
+*.tar
+*.tsv
+*.parquet
+eval/*.json
+
+# chaves e segredos
+.env
+.env.*
+*.key
+*.token
+hf_token*
+
+# python / ferramentas
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+.gradio/
+flagged/
